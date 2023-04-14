@@ -1006,7 +1006,7 @@ ceph config set mgr mgr/dashboard/ssl false
 
 设置服务器ip地址：
 ```shell
-ceph config set mgr mgr/dashboard/server_addr 192.168.56.10 # 这里替换成你的ip
+ceph config set mgr.a mgr/dashboard/server_addr 192.168.56.10 # 这里替换成你的ip
 ```
 
 
@@ -1044,8 +1044,83 @@ ceph dashboard ac-user-create admin -i  ceph-admin-password.txt administrator
 ![](./images/ceph-dashboard.png)
 
 
+ ceph telemetry on --license sharing-1-0
 
 
+
+### cephfs
+
+创建pool：
+
+```shell
+ceph osd pool create cephfs_data 1
+```
+创建元数据的pool：
+
+```shell
+ceph osd pool create cephfs_metadata 64
+```
+创建cephfs：
+
+```shell
+ceph fs new cephfs cephfs_metadata cephfs_data
+```
+
+查看cephfs：
+
+```shell
+ceph fs ls
+```
+
+查看元数据服务的状态：
+
+```shell
+ceph mds stat
+```
+
+
+> 客户端使用 挂载cephfs
+
+查看admin的keyring（这里只是为了做验证测试用的admin实际生产使用请生成对应的keyring）
+
+
+```shell
+[client.admin]
+	key = AQDMCDdkU31DHBAAaft6xc9KFekiQahkq1sHAA==
+	caps mds = "allow *"
+	caps mgr = "allow *"
+	caps mon = "allow *"
+	caps osd = "allow *"
+```
+
+创建一个挂载点：
+
+```shell
+mkdir -pv /test
+```
+
+修改fstab文件（开机挂载），添加内容如下：
+
+
+```shell
+192.168.56.10:/	/test	ceph		mds_namespace=cephfs,name=admin,secret=AQDMCDdkU31DHBAAaft6xc9KFekiQahkq1sHAA==	0 0
+```
+
+测试挂载：
+```shell
+mount -t ceph 192.168.56.10:/ /test -o mds_namespace=cephfs,name=admin,secret=AQDMCDdkU31DHBAAaft6xc9KFekiQahkq1sHAA==
+```
+
+验证：
+
+```shell
+df -Th
+```
+
+
+```shell
+dd if=/dev/zero of=test.img bs=4M count=1024 status=progress
+```
 
 
 
@@ -1053,6 +1128,65 @@ ceph dashboard ac-user-create admin -i  ceph-admin-password.txt administrator
 
 
 
+在`ceph-node`这个节点上来配置 radosgw
+
+在`/etc/ceph/ceph.conf`下添加如下内容：
+
+```shell
+[client.rgw.ceph-node1]
+     host = ceph-node1
+     rgw frontends = "civetweb port=80"
+     rgw dns name = ceph-node1.homelab.sh
+```
+
+创建文件夹：
+
+```shell
+mkdir -p /var/lib/ceph/radosgw/ceph-rgw.`hostname -s`
+```
+
+创建keyring：
+
+ceph-authtool --create-keyring /etc/ceph/ceph.client.radosgw.keyring
+ceph-authtool /etc/ceph/ceph.client.radosgw.keyring -n client.radosgw.gateway --gen-key
+ceph-authtool -n client.radosgw.gateway --cap osd 'allow rwx' --cap mon 'allow rwx' /etc/ceph/ceph.client.radosgw.keyring
+ceph -k /etc/ceph/ceph.client.admin.keyring auth add client.radosgw.gateway -i /etc/ceph/ceph.client.radosgw.keyring
+```shell
+ceph auth get-or-create client.rgw.`hostname -s` osd 'allow rwx' mon 'allow rw' -o /var/lib/ceph/radosgw/ceph-rgw.`hostname -s`/keyring
+```
+创建done这个文件：
+
+```shell
+touch /var/lib/ceph/radosgw/ceph-rgw.`hostname -s`/done
+```
+
+修改权限：
+
+```shell
+chown -R ceph:ceph /var/lib/ceph/radosgw
+chown -R ceph:ceph /var/log/ceph
+chown -R ceph:ceph /var/run/ceph
+chown -R ceph:ceph /etc/ceph
+```
+
+启动服务：
+
+```shell
+ln -sf /usr/bin/radosgw   /usr/bin/ceph-radosgw
+```
+
+
+
+
+> 验证
+
+
+
+
+创建文件夹：
+```shell
+mkdir -p /var/lib/ceph/radosgw/<cluster_name>-rgw.`hostname -s`
+```
 
 
 ### NFS
@@ -1080,6 +1214,29 @@ ceph dashboard ac-user-create admin -i  ceph-admin-password.txt administrator
 
 
 
+## 修复警告
+
+mons are allowing insecure global_id reclaim
+
+在每个mon节点上执行：
+
+```shell
+ceph config set mon mon_warn_on_insecure_global_id_reclaim true
+ceph config set mon mon_warn_on_insecure_global_id_reclaim_allowed true
+ceph config set mon auth_allow_insecure_global_id_reclaim false
+```
+
+
+> 3 monitors have not enabled msgr2
+
+每个mon节点上执行：
+
+```shell
+ceph mon enable-msgr2
+```
+
+
+
 ## TODO List
 
 
@@ -1090,4 +1247,5 @@ ceph dashboard ac-user-create admin -i  ceph-admin-password.txt administrator
 - openrc 下 ceph osd 每次启动block都会报没有权限 需要重新授权之后才能够正常启动 这个可能需要udev规则或者是openrc service来进一步配置 (目前简单的解决方式就是在重启机器之后 `chown  ceph:ceph /var/lib/ceph/osd/ceph-*/block && /etc/init.d/ceph-osd.* restart `
 )
 - bluestore 测试 已经通过
+- openrc radosgw 启动有问题 无法正常读取到mon的配置文件以及keyring
 - systemd 需要修改`MemoryDenyWriteExecute`的值这部分需要单独的patch 
