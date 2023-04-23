@@ -1198,11 +1198,200 @@ mkdir -p /var/lib/ceph/radosgw/<cluster_name>-rgw.`hostname -s`
 ### 块存储
 
 
+创建`libvirt-pool`:
+
+```shell
+ceph osd pool create libvirt-pool 128 128
+```
+
+创建完成之后查看pool是否存在：
+```shell
+ceph osd lspools
+```
+
+使用`rbd`初始化pool:
+```shell
+rbd pool init libvirt-pool
+```
+
+
+创建一个凭证，这个凭证用于libvirt去使用我们创建的`libvirt-pool`：
+```shell
+ceph auth get-or-create client.libvirt mon 'profile rbd' osd \
+ 'profile rbd pool=libvirt-pool'
+```
+
+
+查看是否存在：
+```shell
+ceph auth list
+```
 
 
 
-### iSCSI
+> 客户端配置
 
+
+这里使用libvirt，需要启动对应的USE：
+
+```shell
+USE="rbd" emerge -v libvirt
+```
+
+为了能够正常使用ceph rbd 我们还需要配置一下libvirt服务。
+
+
+编辑`/etc/libvirt/libvirtd.conf`文件，修改以下内容：
+```shell
+auth_unix_ro = "none"
+auth_unix_rw = "none"
+unix_sock_group = "libvirt"
+unix_sock_ro_perms = "0777"
+unix_sock_rw_perms = "0770"
+```
+
+启动服务并加入开机启动：
+```shell
+rc-service libvirtd start && rc-update add libvirtd default
+```
+
+准备一个centos的iso：
+```shell
+wget -c https://mirrors.tuna.tsinghua.edu.cn/centos/7.9.2009/isos/x86_64/CentOS-7-x86_64-Minimal-2009.iso
+```
+
+
+
+拷贝`/etc/ceph/ceph.conf`到客户端：
+```shell
+scp /etc/ceph/ceph.conf 192.168.56.20:/etc/ceph/ceph.conf
+```
+
+
+```shell
+ceph auth get-key client.libvirt | tee /etc/ceph/client.libvirt.key
+```
+
+拷贝对应的keyring到当前节点：
+```shell
+scp /etc/ceph/ceph.client.libvirt.keyring 192.168.56.20:/etc/ceph/
+scp /etc/ceph/client.libvirt.key 192.168.56.20:/etc/ceph/
+```
+
+
+
+创建盘：
+```shell
+qemu-img create -f raw rbd:libvirt-pool/new-libvirt-image:id=libvirt 2G
+```
+
+查看硬盘是否存在：
+```shell
+rbd -p libvirt-pool ls
+```
+
+生产使用的话还是创建pool的方式比较好，使用pool的话需要县创建一个secret：
+```shell
+cat > secret.xml <<EOF
+<secret ephemeral='no' private='no'>
+        <usage type='ceph'>
+                <name>client.libvirt secret</name>
+        </usage>
+</secret>
+EOF
+```
+创建：
+```shell
+sudo virsh secret-define --file secret.xml
+```
+设置对应的secret：
+```shell
+virsh secret-set-value --secret 0bb9f696-12f5-4665-be2c-cc26966614ee --base64 $(cat /etc/ceph/client.libvirt.key) 
+```
+
+创建rbd的存储卷：
+```shell
+cat > libvirt-rbd-pool.xml <<EOF
+<pool type="rbd">
+  <name>libvirt-pool</name>
+  <source>
+    <name>libvirt-pool</name>
+    <host name='192.168.56.10' port='6789'/>
+    <host name='192.168.56.11' port='6789'/>
+    <host name='192.168.56.12' port='6789'/>
+	<name>libvirt-pool</name>
+    <auth username='libvirt' type='ceph'>
+      <secret uuid='0bb9f696-12f5-4665-be2c-cc26966614ee'/>
+    </auth>
+  </source>
+</pool>
+EOF
+virsh pool-define libvirt-rbd-pool.xml
+```
+
+查看所有的pool：
+```shell
+virsh pool-list --all
+```
+启动：
+```shell
+virsh pool-start libvirt-pool
+```
+
+加入开机启动：
+```shell
+virsh pool-autostart  libvirt-pool
+```
+
+我们可以在pool里面创建一个硬盘来验证是否成功，在后面创建虚拟机也会使用到这个pool：
+```shell
+virsh vol-create-as libvirt-pool centos7 --capacity 20G --format raw
+```
+查看创建的卷：
+```shell
+virsh vol-list libvirt-pool
+```
+
+
+使用virt-install创建虚拟机，首先需要安装virt-manager:
+```shell
+emerge -v virt-manager dev-libs/libisoburn
+```
+dev-libs/libisoburn 是使用iso安装需要的一个库
+
+```shell
+mkdir -pv /var/lib/libvirt/boot /opt/qemu/iso
+```
+
+修改权限：
+```shell
+chmod 777 /opt/qemu/ 
+```
+生产不推荐这么做，最好是改成libvirt有权限的。
+
+
+创建虚拟机：
+```shell
+virt-install \
+--force \
+--name=centos7 \
+--memory=2048 \
+--vcpus=2 \
+--location=/opt/qemu/iso/CentOS-7-x86_64-Minimal-2009.iso \
+--disk vol=libvirt-pool/centos7 \
+--accelerate \
+--network network=default,model=virtio \
+--nographics \
+--extra-args console=ttyS0
+```
+
+这里可以看到磁盘
+
+
+可以使用以下命令持续查看ceph io的情况：
+```shell
+ceph -w
+```
 
 
 ### 监控
@@ -1234,6 +1423,7 @@ ceph config set mon auth_allow_insecure_global_id_reclaim false
 ```shell
 ceph mon enable-msgr2
 ```
+
 
 
 
