@@ -4,14 +4,16 @@
 ## 环境
 
 
-這裏使用virtualbox作爲此次的虛擬化軟件
+这里使用virtualbox作为此次的虚拟化软件
 
-有兩個網卡，一個網卡爲hostonly模式用於客戶端鏈接到節點，另外一個是NAT network 用於虛擬機上網。
+每个虚拟机有两张网卡，第一张网卡为hostonly模式用我们去管理ceph集群以及ceph的集群网络，第二张网卡为NAT用于虚拟机上网
 
-- hostonly網絡需要設置爲靜態ip
-- NAT network 可以設置靜態 也可以選擇dhcp
+- hostonly网卡需要设置静态ip
+- NAT 网卡默认DHCP即可
 
-Gentoo Linux openrc
+这里测试的OS为：
+Gentoo Linux openrc 
+
 
 | hostname | ip (hostonly) | role |
 | ------ | ---- | ---- | 
@@ -20,14 +22,14 @@ Gentoo Linux openrc
 | ceph-node2 | 192.168.56.11 | mon，mgr, osd | 
 | gentoo-client | 192.168.56.20 | client | 
 
-192.168.56.1 這個是網關 同時也是資源發佈的服務器
+除此之外还有一台额外的机器作为`binpkg`服务器我们将会在这个服务器上构建ceph的二进制包并在上面启动web服务器用于binpkg的分发
 
 
-配置靜態ip地址，配置參考 https://wiki.gentoo.org/wiki/Netifrc
+配置静态ip的参考文档： https://wiki.gentoo.org/wiki/Netifrc
 
 > ceph-node1
 
-創建並編輯 `/etc/conf.d/net` 文件，內容如下：
+创建并编辑`/etc/conf.d/net` 文件，內容如下：
 
 
 ```
@@ -39,7 +41,7 @@ dns_servers_enp0s8="114.114.114.114"
 EOF
 ```
 
-創建服務的軟鏈接：
+创建服务软连接：
 
 
 ```shell
@@ -47,20 +49,20 @@ ln -svf /etc/init.d/net.lo /etc/init.d/net.enp0s3
 ln -svf /etc/init.d/net.lo /etc/init.d/net.enp0s8
 ```
 
-開機啓動服務：
+将其加入到开机启动：
 
 ```
 rc-update add net.enp0s3 default
 rc-update add net.enp0s8 default
 ```
 
-確保關閉dhcpcd或者是networkmanager之類的服務。
+确保已经将dhcpcd或者是networkmanager之类的服务关闭掉：
 
 ```shell
 rc-update delete dhcpcd default
 ```
 
-設置主機名：
+设置主机名：
 
 
 ```
@@ -76,13 +78,8 @@ vi /etc/conf.d/hostname
 192.168.56.12 ceph-node3
 ```
 
-重啓機器：
 
-```shell
-reboot
-```
-
-其他的節點也是類似的操作。
+其他的节点也是类似的操作。
 
 ### 时间同步服务器
 
@@ -123,9 +120,10 @@ date
 ## binpkg server
 
 
-### 設置服務端
+### 设置服务端
 
-這裏使用的是gpkg格式的binpkg server，需要一個gpg key 同時還需要一個http來去發佈編譯好的包。
+这里使用的是gpkg格式的binpkg server，需要一个gpg key（用于给包做签名） 同時还需要一个http服务器来去发布编译好的二进制包。
+
 
 `make.conf`的內容如下：
 
@@ -140,7 +138,10 @@ GPG_VERIFY_USER_DROP="portage"
 GPG_VERIFY_GROUP_DROP="portage"
 ```
 
-構建整個系統
+`BINPKG_GPG_SIGNING_KEY`这个key就是生成的gpg key，这部分的教程可以参考:https://docs.github.com/en/authentication/managing-commit-signature-verification/generating-a-new-gpg-key
+
+构建整个系统：
+
 ```shell
 emerge -ueDN @world
 ```
@@ -161,19 +162,19 @@ quickpkg --include-config=y sys-cluster/ceph
 `--include-config` 这个选项需要是y 不然openrc下面会缺少配置
 
 
-> 注意這一步需要使用root用戶
+> 注意这一步需要使用root用戶
 
 
-發佈內容：
+发布binpkgserver：
 
 ```shell
 cd /var/cache/binpkgs
 python -m http.server 9000
 ```
 
-### 客戶端使用
+### 节点使用binpkgserver
 
-創建一個生成和導入key的腳本`create-portage-local-gpg`，內容如下：
+创建一个生成和导入gpg key的脚本`create-portage-local-gpg`，內容如下：
 
 ```shell
 #!/bin/bash
@@ -218,17 +219,17 @@ echo -e "5\ny\n" | gpg --command-fd 0 --edit-key "${KEY}" trust
 chmod ugo+r "${GNUPGHOME}/trustdb.gpg"
 ```
 
-執行：
+执行：
 
 ```shell
 bash create-portage-local-gpg
 ```
 
-執行完成之後可以看到對應的key：
+执行完成之后可以看到对应的key：
 
 ![](./images/gpg-list-keys.png)
 
-編輯`make.conf`文件添加內容如下：
+集群节点编辑`make.conf`文件添加內容如下：
 
 ```shell
 EMERGE_DEFAULT_OPTS="${EMERGE_DEFAULT_OPTS} --getbinpkgonly"
@@ -237,7 +238,7 @@ PORTAGE_BINHOST="http://192.168.56.109:9000"
 ```
 
 
-安裝ceph:
+在每个节点上安装ceph:
 ```shell
 emerge -av ceph
 ```
@@ -370,6 +371,7 @@ chown -R ceph:ceph /var/lib/ceph/mon/ceph-mon.a
 
 > openrc
 
+添加软连接：
 ```shell
 ln -s /etc/init.d/ceph /etc/init.d/ceph-mon.mon.a
 ```
@@ -379,14 +381,11 @@ ln -s /etc/init.d/ceph /etc/init.d/ceph-mon.mon.a
 /etc/init.d/ceph-mon.mon.a start
 ```
 
-
 加入开机启动：
 
 ```shell
 rc-update add ceph-mon.mon.a default
 ```
-
-
 
 > systemd 
 
@@ -397,9 +396,6 @@ vi /lib/systemd/system/ceph-mon@.service
 ```
 
 修改`MemoryDenyWriteExecute`的值为`false` 这个具体原因可以看 https://bugs.launchpad.net/ubuntu/+source/ceph/+bug/1917414
-
-
-
 
 
 修改完成之后:
@@ -427,6 +423,7 @@ systemctl status ceph-osd@gentoo
 
 > ceph-node2
 
+node2 节点上操作如下：
 
 ```shell
 mkdir -p /var/lib/ceph/mon/ceph-mon.b
@@ -440,6 +437,8 @@ rc-update add ceph-mon.mon.b default
 ```
 
 > ceph-node3
+
+node3节点上操作如下：
 
 ```shell
 mkdir -p /var/lib/ceph/mon/ceph-mon.c
@@ -513,6 +512,7 @@ chown -R ceph:ceph /var/lib/ceph/mgr
 
 > openrc
 
+添加软连接：
 ```shell
 cd /etc/init.d
 ln -s ceph ceph-mgr.a
@@ -534,7 +534,6 @@ rc-update add ceph-mgr.a default
 ```shell
 ceph-mgr -i $name
 ```
-
 
 
 使用systemd启动之前需要先将`/lib/systemd/system/ceph-mgr@.service` 配置文件中的`MemoryDenyWriteExecute` 设置为`false`
@@ -580,6 +579,7 @@ chown -R ceph:ceph /var/lib/ceph/mgr
 
 > openrc
 
+添加软连接：
 ```shell
 cd /etc/init.d
 ln -s ceph ceph-mgr.b
@@ -617,6 +617,7 @@ chown -R ceph:ceph /var/lib/ceph/mgr
 
 > openrc
 
+添加软连接
 ```shell
 cd /etc/init.d
 ln -s ceph ceph-mgr.c
@@ -666,12 +667,7 @@ ceph -s
 并且是有一个为主，还有两个是standbys
 
 
-
-
-
-
 ### 配置osd
-
 
 
 > bluestore
@@ -761,8 +757,6 @@ mkdir -pv /var/lib/ceph/osd
 ```shell
 ceph-volume lvm create --no-systemd --bluestore  --data /dev/sdb
 ```
-
-
 
 修改权限：
 
@@ -1044,7 +1038,6 @@ ceph dashboard ac-user-create admin -i  ceph-admin-password.txt administrator
 ![](./images/ceph-dashboard.png)
 
 
- ceph telemetry on --license sharing-1-0
 
 
 
@@ -1124,7 +1117,7 @@ dd if=/dev/zero of=test.img bs=4M count=1024 status=progress
 
 
 
-### 对象存储
+### 对象存储（测试中）
 
 
 
@@ -1146,11 +1139,13 @@ mkdir -p /var/lib/ceph/radosgw/ceph-rgw.`hostname -s`
 ```
 
 创建keyring：
-
+```shell
 ceph-authtool --create-keyring /etc/ceph/ceph.client.radosgw.keyring
 ceph-authtool /etc/ceph/ceph.client.radosgw.keyring -n client.radosgw.gateway --gen-key
 ceph-authtool -n client.radosgw.gateway --cap osd 'allow rwx' --cap mon 'allow rwx' /etc/ceph/ceph.client.radosgw.keyring
 ceph -k /etc/ceph/ceph.client.admin.keyring auth add client.radosgw.gateway -i /etc/ceph/ceph.client.radosgw.keyring
+```
+创建凭证：
 ```shell
 ceph auth get-or-create client.rgw.`hostname -s` osd 'allow rwx' mon 'allow rw' -o /var/lib/ceph/radosgw/ceph-rgw.`hostname -s`/keyring
 ```
@@ -1176,8 +1171,6 @@ ln -sf /usr/bin/radosgw   /usr/bin/ceph-radosgw
 ```
 
 
-
-
 > 验证
 
 
@@ -1187,11 +1180,6 @@ ln -sf /usr/bin/radosgw   /usr/bin/ceph-radosgw
 ```shell
 mkdir -p /var/lib/ceph/radosgw/<cluster_name>-rgw.`hostname -s`
 ```
-
-
-### NFS
-
-
 
 
 
@@ -1405,7 +1393,11 @@ ceph -w
 
 ## 修复警告
 
+
+reclaim警告：
+```shell
 mons are allowing insecure global_id reclaim
+```
 
 在每个mon节点上执行：
 
